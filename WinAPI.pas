@@ -40,7 +40,7 @@ type
     
     public function GetName: string;
     
-    public function GetParent: WinAPIWindow;
+    public function IsAlive: boolean;
     
     public function GetPlacement: WinAPIWindowPlacement;
     
@@ -101,12 +101,9 @@ external 'user32.dll';
 function WinAPIWindow.GetName :=
 StringGetHelper.GetString(self, GetWindowTextLength(self)+1, GetWindowText);
 
-function GetParent(win: WinAPIWindow): WinAPIWindow;
+function IsWindow(win: WinAPIWindow): boolean;
 external 'user32.dll';
-function WinAPIWindow.GetParent: WinAPIWindow;
-begin
-  
-end;
+function WinAPIWindow.IsAlive := IsWindow(self);
 
 {$endregion Win info}
 

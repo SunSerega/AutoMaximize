@@ -234,7 +234,9 @@ begin
       e.Cancel := true;
     end;
     
-    tray_icon.LeftClickCommand := new ReopenWindowCommand(w, tray_icon);
+    var reopen_command := new ReopenWindowCommand(w, tray_icon);
+    tray_icon.LeftClickCommand := reopen_command;
+    tray_icon.DoubleClickCommand := reopen_command;
   end;
   
   var g := new Grid;
@@ -265,6 +267,7 @@ begin
   System.Threading.Thread.Create(()->
   while true do
   begin
+    un_max.RemoveWhere(w->not w.IsAlive);
     un_max.RemoveWhere(TryMaximize);
     
     LongPollWindows(w->
