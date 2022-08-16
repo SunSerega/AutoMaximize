@@ -156,13 +156,37 @@ begin
   Result := GN_What;
 end;
 
+type
+  ReopenWindowCommand = sealed class(System.Windows.Input.ICommand)
+    private w: Window;
+    private icon: UIElement;
+    
+    public constructor(w: Window; icon: UIElement);
+    begin
+      self.w := w;
+      self.icon := icon;
+    end;
+    private constructor := raise new System.InvalidOperationException;
+    
+    public procedure add_CanExecuteChanged(hnd: EventHandler) := exit;
+    public procedure remove_CanExecuteChanged(hnd: EventHandler) := exit;
+    public function CanExecute(parameter: System.Object) := true;
+    public procedure Execute(parameter: System.Object);
+    begin
+      w.Show;
+      icon.Visibility := Visibility.Hidden;
+    end;
+    
+  end;
+  
 begin
   
   foreach var gname in |GN_Touch, GN_What, GN_Dont| index i do
   begin
-    var gr := new WinClassGroup(gname);
+    var full_gname := $'{i} {gname}';
+    var gr := new WinClassGroup(full_gname);
     
-    var dir := $'{ClassesDir}\{i} {gname}';
+    var dir := $'{ClassesDir}\{full_gname}';
     System.IO.Directory.CreateDirectory(dir);
     foreach var fname in EnumerateFiles(dir) do
     begin
@@ -183,6 +207,35 @@ begin
   
   var w := new Window;
   w.WindowState := WindowState.Maximized;
+  w.Title := 'Auto-Minimizer';
+  
+  begin
+    {$reference Hardcodet.NotifyIcon.Wpf.dll}
+    var tray_icon := new Hardcodet.Wpf.TaskbarNotification.TaskbarIcon;
+    tray_icon.ToolTipText := w.Title;
+    tray_icon.Visibility := Visibility.Hidden;
+    
+    tray_icon.ContextMenu := new ContextMenu;
+    begin
+      var mi := new MenuItem;
+      tray_icon.ContextMenu.Items.Add(mi);
+      mi.Header := 'Stop';
+      mi.Click += (o,e)->
+      begin
+        tray_icon.Dispose;
+        Application.Current.Shutdown();
+      end;
+    end;
+    
+    w.Closing += (o,e)->
+    begin
+      w.Hide;
+      tray_icon.Visibility := Visibility.Visible;
+      e.Cancel := true;
+    end;
+    
+    tray_icon.LeftClickCommand := new ReopenWindowCommand(w, tray_icon);
+  end;
   
   var g := new Grid;
   w.Content := g;
