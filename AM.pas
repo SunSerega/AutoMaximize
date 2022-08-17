@@ -211,7 +211,7 @@ begin
   begin
     {$reference Hardcodet.NotifyIcon.Wpf.dll}
     var tray_icon := new Hardcodet.Wpf.TaskbarNotification.TaskbarIcon;
-    tray_icon.ToolTipText := w.Title;
+//    tray_icon.ToolTipText := w.Title;
     tray_icon.Visibility := Visibility.Hidden;
     
     tray_icon.ContextMenu := new ContextMenu;
