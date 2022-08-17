@@ -15,7 +15,6 @@ var enc := new System.Text.UTF8Encoding(true);
 procedure AppendLine(log, line: string);
 begin
   System.IO.File.AppendAllLines(log, |line|, enc);
-  Console.Beep;
 //  Writeln((log,line));
 end;
 
@@ -289,7 +288,7 @@ begin
           var gr := WinClassGroup.All.Single(gr->gr.name=gname);
           c := gr.AddClass(cname);
           System.IO.File.Create(c.GetLogName).Close;
-          
+          Console.Beep;
         end;
         
         if c.gr.name=GN_Touch then
