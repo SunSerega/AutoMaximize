@@ -42,7 +42,7 @@ type
     
     public function IsAlive: boolean;
     
-    public function GetPlacement: WinAPIWindowPlacement;
+    public function GetPlacement: WinAPIWindowPlacement?;
     
     public function Maximize: boolean;
     
@@ -143,10 +143,12 @@ external 'user32.dll';
 function GetWindowPlacement(win: WinAPIWindow; var pl: WinAPIWindowPlacement): boolean;
 external 'user32.dll';
 
-function WinAPIWindow.GetPlacement: WinAPIWindowPlacement;
+function WinAPIWindow.GetPlacement: WinAPIWindowPlacement?;
 begin
-  if not GetWindowPlacement(self, Result) then
-    raise new System.ComponentModel.Win32Exception;
+  var res: WinAPIWindowPlacement;
+  if GetWindowPlacement(self, res) then
+    Result := res else
+    Result := nil;
 end;
 
 function WinAPIWindow.Maximize: boolean;
@@ -159,7 +161,7 @@ begin
     exit;
 //    new System.ComponentModel.Win32Exception;
   
-  Result := GetPlacement.showCmd=WinAPIWindowShowState.SW_MAXIMIZE;
+  Result := GetPlacement.GetValueOrDefault.showCmd=WinAPIWindowShowState.SW_MAXIMIZE;
 end;
 
 {$endregion Maximize}

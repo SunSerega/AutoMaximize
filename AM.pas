@@ -179,6 +179,7 @@ type
   end;
   
 begin
+  var StartMinimized := 'StartMinimized' in CommandLineArgs;
   
   foreach var gname in |GN_Touch, GN_What, GN_Dont| index i do
   begin
@@ -227,11 +228,16 @@ begin
     end;
     
     w.Closing += (o,e)->
+    if System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control) then
+      Application.Current.Shutdown else
     begin
       w.Hide;
       tray_icon.Visibility := Visibility.Visible;
       e.Cancel := true;
     end;
+    if StartMinimized then
+      tray_icon.Visibility := Visibility.Visible else
+      w.Show;
     
     var reopen_command := new ReopenWindowCommand(w, tray_icon);
     tray_icon.LeftClickCommand := reopen_command;
@@ -273,7 +279,7 @@ begin
     begin
 //      $'{DateTime.Now}: [{(w.GetClass()??string.Empty).PadRight(50)}] "{(w.GetName()??string.Empty).PadRight(100)}"'.Println;
       
-      if w.GetPlacement.showCmd<>WinAPIWindowShowState.SW_NORMAL then exit;
+      if w.GetPlacement.GetValueOrDefault.showCmd<>WinAPIWindowShowState.SW_NORMAL then exit;
       
       var cname := w.GetClass;
       if cname=nil then exit;
@@ -305,6 +311,6 @@ begin
     Sleep(100);
   end).Start;
   
-  var ec := Application.Create.Run(w);
+  var ec := Application.Create.Run;
   Halt(ec);
 end.
