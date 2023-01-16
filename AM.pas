@@ -15,7 +15,6 @@
 
 //TODO Missing features:
 // - Save changes
-// - Detect windows
 
 uses System;
 uses System.Windows;
@@ -1137,13 +1136,80 @@ begin
     begin
       var grs := WinClassGroup.All;
       var upd: Action<Action> := a->a();
-      grs[0].Add( new WinClass( 'a@[1..2*1bd..f]@[1..2*1be..g]@[*]@[*a]@[*]@[*a]@[*]@[*a]c',  upd, |new WinName('name1')|), nil );
-      grs[0].Add( new WinClass( 'a@[2..3*b]c',  upd, |new WinName('name2')|), nil );
-      grs[1].Add( new WinClass( 'abbc',         upd, |new WinName('name3')|), nil );
+//      grs[0].Add( new WinClass( 'a@[1..2*1bd..f]@[1..2*1be..g]@[*]@[*a]@[*]@[*a]@[*]@[*a]c',  upd, |new WinName('name1')|), nil );
+//      grs[0].Add( new WinClass( 'a@[2..3*b]c',  upd, |new WinName('name2')|), nil );
+//      grs[1].Add( new WinClass( 'abbc',         upd, |new WinName('name3')|), nil );
     end;
     {$endif NoSaves}
     
-//    LetChooseMerge(WinClassGroup.All[0].win_classes.Select(cl->cl.cl_name).Take(1), WinClassGroup.All[0].ms_list);
+    update_visual(()->System.Threading.Thread.Create(()->
+    while true do
+    try
+      
+      WinAPI.LongPollWindows(w->
+      begin
+        Result := false;
+        
+        if not w.CanMaximize then exit;
+        
+        var pl := w.GetPlacement;
+        if pl=nil then exit;
+        var w_st_max := false;
+        case pl.Value.showCmd of
+          SW_SHOWMINIMIZED: exit;
+          SW_MAXIMIZE: w_st_max := true;
+          SW_NORMAL: ;
+          else raise new NotImplementedException(pl.Value.showCmd.ToString);
+        end;
+        
+        var cl_s := w.GetClass;
+        if cl_s=nil then exit;
+        var cl_ms := MergedString.Literal(cl_s);
+        
+        var wn_s := w.GetName;
+        var wn_ms := if wn_s=nil then nil else MergedString.Literal(wn_s);
+        
+        var cls := new List<WinClass>;
+        foreach var gr in WinClassGroup.All do
+          foreach var (key, v) in gr.ms_list.DepValues(cl_ms) do
+            cls += WinClass(v[0]);
+        
+        if (cls.Count>1) and (wn_ms<>nil) then
+        begin
+          var new_cls := cls.FindAll(cl->wn_ms in cl.ms_list);
+          if new_cls.Count<>0 then
+            cls := new_cls;
+        end;
+        
+        if cls.Select(cl->cl.gr).Distinct.Skip(1).Any then
+          cls.Clear;
+        
+        if cls.Count=0 then
+          foreach var (key, v) in WinClassGroup.All[1].ms_list.DepValues(cl_ms) do
+          begin
+            cls += WinClass(v[0]);
+            break;
+          end;
+        
+        if cls.Count=0 then
+          cls += g.Dispatcher.Invoke(()->
+          begin
+            Result := new WinClass( cl_ms, cl_s, update_visual, Seq&<WinName>() );
+            WinClassGroup.All[1].Add( Result, nil );
+          end);
+        
+        var cl := cls.First;
+        
+        if wn_ms<>nil then
+          g.Dispatcher.Invoke(()->cl.Add( new WinName(wn_ms, wn_s), nil ));
+        
+        Result := (cl.gr <> WinClassGroup.All[0]) or w_st_max or w.Maximize;
+      end);
+      
+    except
+      on e: Exception do
+        MessageBox.Show(e.ToString);
+    end).Start());
     
     var ec := Application.Create.Run(w);
     Halt(ec);

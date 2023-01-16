@@ -42,13 +42,15 @@ type
     
     public function IsAlive: boolean;
     
+    public function CanMaximize: boolean;
+    
     public function GetPlacement: WinAPIWindowPlacement?;
     
     public function Maximize: boolean;
     
   end;
   
-procedure LongPollWindows(new_win: Action<WinAPIWindow>);
+procedure LongPollWindows(new_win: WinAPIWindow -> boolean);
 
 implementation
 
@@ -115,7 +117,7 @@ function IsWindowVisible(win: WinAPIWindow): boolean;
 external 'user32.dll';
 
 var last_windows := new HashSet<WinAPIWindow>;
-procedure LongPollWindows(new_win: Action<WinAPIWindow>);
+procedure LongPollWindows(new_win: WinAPIWindow -> boolean);
 begin
   var curr_windows := new HashSet<WinAPIWindow>(last_windows.Count);
   
@@ -123,10 +125,9 @@ begin
   begin
     Result := true;
     if not IsWindowVisible(win) then exit;
-    if win not in last_windows then
-      new_win(win);
-    if not curr_windows.Add(win) then
-      raise new System.InvalidOperationException;
+    if (win in last_windows) or new_win(win) then
+      if not curr_windows.Add(win) then
+        raise new System.InvalidOperationException;
   end, IntPtr.Zero) then
     raise new System.ComponentModel.Win32Exception;
   
@@ -137,11 +138,22 @@ end;
 
 {$region Maximize}
 
+function GetWindowLongPtr(win: WinAPIWindow; val_ind: integer): IntPtr;
+external 'user32.dll';
+
 function PostMessage(win: WinAPIWindow; msg: UInt32; w_param: UIntPtr; l_param: IntPtr): boolean;
 external 'user32.dll';
 
 function GetWindowPlacement(win: WinAPIWindow; var pl: WinAPIWindowPlacement): boolean;
 external 'user32.dll';
+
+function WinAPIWindow.CanMaximize: boolean;
+const GWL_STYLE = -16;
+const WS_MAXIMIZEBOX = $00010000;
+begin
+  var style := GetWindowLongPtr(self, GWL_STYLE).ToInt64;
+  Result := style and WS_MAXIMIZEBOX <> 0;
+end;
 
 function WinAPIWindow.GetPlacement: WinAPIWindowPlacement?;
 begin
