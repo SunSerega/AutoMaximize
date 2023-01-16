@@ -87,7 +87,7 @@ type
       
     end;
     
-    public function Remove(s: MergedString; on_rem: System.ValueTuple<MergedString,array of object>->() := nil): integer;
+    public function Remove(s: MergedString; on_rem: System.ValueTuple<MergedString,array of object>->()): integer;
     begin
       foreach var (ind,key) in IndsConsumedBy(s).ToArray do
       begin

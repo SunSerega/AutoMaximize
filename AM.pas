@@ -23,10 +23,11 @@ uses System.Windows.Controls;
 
 uses Misc;
 uses TrayData;
-//uses GenWraps;
 uses MSList;
 
 uses WinAPI;
+
+uses PathUtils      in 'Utils\PathUtils';
 
 uses Parsing        in 'Utils\Parsing';
 uses ColoredStrings in 'Utils\ColoredStrings';
@@ -52,6 +53,8 @@ type
     begin
       
       self.Children.Add(tb);
+//      tb.FontFamily := new FontFamily('Cascadia Code');
+      tb.FontFamily := new FontFamily('Consolas');
       
       var arrows := new StackPanel;
       self.Children.Add(arrows);
@@ -226,6 +229,84 @@ type
   
   {$region Utils}
   
+  AMEncoding = sealed class(System.Text.UTF8Encoding)
+    public constructor := Create(true);
+    public static Inst := new AMEncoding;
+  end;
+  
+  SaveHelper = static class
+    private static save_delay := 0;
+    
+    private static save_lock := new object;
+    private static to_save := new Dictionary<string, sequence of string>;
+    private static to_del := new HashSet<string>;
+    
+    {$region SaveDelay}
+    
+    private static procedure Save(fname: string; lines: sequence of string) :=
+    if not FileExists(fname) or not ReadLines(fname, AMEncoding.Inst).SequenceEqual(lines) then
+      // May be slow, but I don't expect big files
+      System.IO.File.WriteAllLines(fname, lines, AMEncoding.Inst);
+    
+    public static procedure IncSaveDelay :=
+      System.Threading.Interlocked.Increment(save_delay);
+    
+    public static procedure DecSaveDelay;
+    begin
+      var lvl := System.Threading.Interlocked.Decrement(save_delay);
+      if lvl<0 then raise new System.InvalidOperationException;
+      if lvl>0 then exit;
+      
+      lock save_lock do
+      begin
+        
+        foreach var fname in to_save.Keys do
+          Save(fname, to_save[fname]);
+        foreach var fname in to_del do
+          System.IO.File.Delete(fname);
+        
+        to_save.Clear;
+        to_del.Clear;
+      end;
+      
+    end;
+    
+    public static procedure DelaySaves(a: Action) :=
+    try
+      IncSaveDelay;
+      a();
+    finally
+      DecSaveDelay;
+    end;
+    
+    {$endregion SaveDelay}
+    
+    {$region Operations}
+    
+    public static procedure ChangeFile(fname: string; lines: sequence of string) :=
+    lock save_lock do
+    begin
+      if save_delay=0 then
+        raise new System.InvalidOperationException;
+      fname := PathUtils.GetRelativePathRTA(fname);
+      to_save[fname] := lines;
+      to_del -= fname;
+    end;
+    
+    public static procedure DeleteFile(fname: string) :=
+    lock save_lock do
+    begin
+      if save_delay=0 then
+        raise new System.InvalidOperationException;
+      fname := PathUtils.GetRelativePathRTA(fname);
+      to_save.Remove(fname);
+      to_del += fname;
+    end;
+    
+    {$endregion Operations}
+    
+  end;
+  
   SymEscapeHelper = static class
     private const esc_sym = '%';
     private static escapables := System.IO.Path.GetInvalidFileNameChars.Append(esc_sym).ToHashSet;
@@ -244,6 +325,7 @@ type
           res += ch;
       Result := res.ToString;
     end;
+    public static function Escape(s: MergedString) := Escape(s.ToString(esc_sym));
     
     public static function UnEscape(s: string): string;
     begin
@@ -264,10 +346,6 @@ type
       Result := res.ToString;
     end;
     
-  end;
-  
-  AMEncoding = sealed class(System.Text.UTF8Encoding)
-    public constructor := Create(true);
   end;
   
   SelectionManager = static class
@@ -293,6 +371,8 @@ type
       Limit&<T>(keep);
       curr.Add(o, rem);
     end;
+    
+    public static function Remove(o: object) := curr.Remove(o);
     
     public static function IsSelected(o: object) := curr.ContainsKey(o);
     public static function AllSelected := curr.Keys;
@@ -372,6 +452,17 @@ type
     private ms_list := new MergedStringList;
     private vis: VisWinClass;
     
+    private function MakeFileName: string;
+    private procedure Resave;
+    begin
+      if gr=nil then exit;
+      SaveHelper.ChangeFile(MakeFileName,
+        win_names.Select(wn->
+          wn.name.ToString(SymEscapeHelper.esc_sym)
+        )
+      );
+    end;
+    
     public procedure Add(wn: WinName; OnConsumed: WinName->());
     begin
       wn.cl := self;
@@ -384,13 +475,16 @@ type
         wn, wn.vis
       );
       vis.DisplayEmpty(false);
+      Resave;
     end;
     
     public procedure Remove(wn: WinName) := Remove(wn.name);
     public procedure Remove(wn: MergedString);
     begin
-      ms_list.Remove(wn);
+      if ms_list.Remove( wn, nil )<>1 then
+        raise new System.InvalidOperationException;
       vis.DisplayEmpty(win_names.Count=0);
+      Resave;
     end;
     
     public procedure Absorb(del_cl: WinClass);
@@ -444,7 +538,7 @@ type
         System.IO.Path.GetFileName(fname)
       ),
       update_visual,
-      ReadLines(fname, new AMEncoding)
+      ReadLines(fname, AMEncoding.Inst)
       .Select(NameFromLine)
       {$ifdef NoSaves}
       .Take(0)
@@ -458,15 +552,18 @@ type
   {$region Group}
   
   WinClassGroup = sealed partial class
-    private name: string;
+    private path, name: string;
     private win_classes := new List<WinClass>;
     private ms_list := new MergedStringList;
     private vis: VisWinClassGroup;
     
+    public function PredatorClasses(cl_name: MergedString) :=
+    ms_list.DepValues(cl_name).Select(\(s,v)->WinClass(v[0]));
+    
     public procedure Add(new_cl: WinClass; OnConsumed: WinClass->());
     begin
       new_cl.gr := self;
-      ms_list.Add(new_cl.cl_name,
+      if ms_list.Add(new_cl.cl_name,
         \(key, v)->
         begin
           TryInvoke(OnConsumed, new_cl);
@@ -477,23 +574,37 @@ type
           var del_cl := WinClass(v[0]);
           TryInvoke(OnConsumed, del_cl);
           new_cl.Absorb(del_cl);
+          SaveHelper.DeleteFile(del_cl.MakeFileName);
         end,
         new_cl, new_cl.vis
-      );
+      ) then
+        new_cl.Resave;
+    end;
+    
+    public procedure Remove(cl_name: MergedString; on_del: WinClass->());
+    begin
+      if 1 <> ms_list.Remove(cl_name, \(key,v)->
+      begin
+        var del_cl := WinClass(v[0]);
+        TryInvoke(on_del, del_cl);
+        SaveHelper.DeleteFile(del_cl.MakeFileName);
+      end) then
+        raise new System.InvalidOperationException;
     end;
     
     private static All := new List<WinClassGroup>;
     public constructor(dir: string; update_visual: Action<Action>);
     begin
+      self.path := dir;
       self.name := System.IO.Path.GetFileName(dir).Split(|' '|,2)[1];
       self.vis := new VisWinClassGroup(self.name);
       
       ms_list += win_classes;
       ms_list += vis.body.Children;
       
-      foreach var fname in EnumerateFiles(dir){$ifdef NoSaves}.Take(0){$endif} do
+      foreach var fname in System.IO.Directory.CreateDirectory(dir).EnumerateFiles{$ifdef NoSaves}.Take(0){$endif} do
         update_visual(()->self.Add(
-          new WinClass(fname, update_visual),
+          new WinClass(fname.FullName, update_visual),
           old_wc->WinCommon.InformOfConsumedOnInit(self,old_wc, name,old_wc.vis.head.Text)
         ));
       
@@ -515,6 +626,9 @@ type
   
   {$endregion Logic}
   
+function WinClass.MakeFileName :=
+$'{gr.path}\{SymEscapeHelper.Escape(cl_name)}';
+
 {$region Group moving}
 
 function LetChooseOne<T>(title: string; choises: IList<T>): integer?;
@@ -559,7 +673,7 @@ try
   var new_gr := old_gr.NextInDir(dir);
   if new_gr=nil then exit;
   
-  var new_cls := new_gr.ms_list.DepValues(old_cl.cl_name).Select(\(s,v)->WinClass(v[0])).ToList;
+  var new_cls := new_gr.PredatorClasses(old_cl.cl_name).ToList;
   if new_cls.Count>1 then
   begin
     var ind := LetChooseOne($'Choose window class', new_cls.ConvertAll(cl->cl.cl_name.ToString(SymEscapeHelper.esc_sym)));
@@ -569,25 +683,24 @@ try
     new_cls += new_cl;
   end;
   
-  old_cl.vis.Dispatcher.Invoke(()->
+  old_cl.vis.Dispatcher.Invoke(()->SaveHelper.DelaySaves(()->
   begin
     foreach var wn in names do
-      if old_cl.ms_list.Remove( wn.name )<>1 then
-        raise new InvalidOperationException;
+      old_cl.Remove(wn);
     var new_cl: WinClass;
     if new_cls.Count=0 then
     begin
       new_cl := new WinClass(old_cl.cl_name, old_cl.vis.head.Text, a->a(), names);
-      new_gr.Add( new_cl, nil );
+      new_gr.Add( new_cl, del_cl->if del_cl=new_cl then raise new InvalidOperationException );
     end else
     begin
       new_cl := new_cls.Single;
-      foreach var wn in names do
-        new_cl.Add( wn, nil );
+      foreach var wn in names.ToArray do
+        new_cl.Add( wn, del_wn->if wn=del_wn then SelectionManager.Remove(del_wn) );
     end;
     foreach var wn in names do
       wn.cl := new_cl;
-  end);
+  end));
   
 except
   on e: Exception do MessageBox.Show(e.ToString);
@@ -598,14 +711,13 @@ begin
   var new_gr := old_gr.NextInDir(dir);
   if new_gr=nil then exit;
   
-//  classes.PrintLines(cl->cl.cl_name);
-//  Writeln('='*30);
-  foreach var cl in classes do
-  begin
-    if old_gr.ms_list.Remove(cl.cl_name)<>1 then
-      raise new InvalidOperationException;
-    new_gr.Add( cl, nil );
-  end;
+  SaveHelper.DelaySaves(()->
+    foreach var cl in classes.ToArray do
+    begin
+      old_gr.Remove( cl.cl_name, nil );
+      new_gr.Add( cl, del_cl->if del_cl=cl then SelectionManager.Remove(del_cl) );
+    end
+  );
   
 end;
 
@@ -778,7 +890,7 @@ begin
   
   {$region Update lists}
   
-  var make_list_entry := function(s: MergedString; click: ()->()): ContentControl ->
+  var make_list_entry := function(s: MergedString; click: Action): ContentControl ->
   begin
     if click=nil then
       Result := new ContentControl else
@@ -797,46 +909,49 @@ begin
   end);
   
   var remove_from_list := procedure(list_i: integer; s: MergedString)->
-    if ms_list[list_i].Remove(s) <> 1 then
+    if ms_list[list_i].Remove( s, nil ) <> 1 then
       raise new System.InvalidOperationException;
   
-  var add_to_list0 := procedure(s: MergedString)->
-    ms_list[0].Add(s, t->raise nil,t->raise nil, make_list_entry(s, nil));
-  
-  var add_to_list3 := procedure(s: MergedString)->
-    ms_list[3].Add(s, t->raise nil,t->raise nil, make_list_entry(s, nil));
-  
-  var add_to_list4 := procedure(s: MergedString)->
-    ms_list[4].Add(s, t->raise nil,t->raise nil, make_list_entry(s, nil));
-  
-  // 0. Expected
-  // 1. Missing
-  // 2. Unexpected
-  // 3. Other
-  // 4. Predators
-  var add_to_list1 := procedure(s: MergedString)->
-    ms_list[1].Add(s, t->raise nil,t->raise nil, make_list_entry(s, ()->
-    begin
-      remove_from_list(1, s); // Missing
-      add_to_list3(s);        // Other
-      expected.Remove(s);
-    end));
-  
-  var add_to_list2 := procedure(s: MergedString)->
-    ms_list[2].Add(s, t->raise nil,t->raise nil, make_list_entry(s, ()->
-    begin
-      remove_from_list(2, s); // Unexpected
-      add_to_list0(s);        // Expected
-      expected.Add(s);
-    end));
+  var add_to_list: procedure(list_i: integer; s: MergedString); add_to_list := (list_i,s)->
+  begin
+    
+    // 0. Expected
+    // 1. Missing
+    // 2. Unexpected
+    // 3. Other
+    // 4. Predators
+    var on_click := default(Action);
+    case list_i of
+      0,3,4: ;
+      1: on_click := ()->
+      begin
+        remove_from_list(1, s); // Missing
+        add_to_list(3,s);        // Other
+        expected.Remove(s);
+      end;
+      2: on_click := ()->
+      begin
+        remove_from_list(2, s); // Unexpected
+        add_to_list(0, s);        // Expected
+        expected.Add(s);
+      end;
+      else raise new System.InvalidOperationException;
+    end;
+    
+    ms_list[list_i].Add(s,
+      \(key,v)->raise new System.InvalidOperationException($'s="{s}" in key="{key}"'),
+      \(key,v)->raise new System.InvalidOperationException($'key="{key}" in s="{s}"'),
+      make_list_entry(s, on_click)
+    );
+  end;
   
   var last_consumed := new HashSet<MergedString>;
   var last_predators := new HashSet<MergedString>;
   foreach var s in expected do
-    add_to_list1(s);
+    add_to_list(1,s);
   foreach var s in all.Keys do
     if s not in expected then
-      add_to_list3(s);
+      add_to_list(3,s);
   
   var lists_next_update_id := 1;
   var lists_last_update_id := 0;
@@ -879,11 +994,11 @@ begin
             if s in expected then
             begin
               remove_from_list(1, s); // Missing
-              add_to_list0(s);        // Expected
+              add_to_list(0,s);        // Expected
             end else
             begin
               remove_from_list(3, s); // Other
-              add_to_list2(s);        // Unexpected
+              add_to_list(2,s);        // Unexpected
             end
           );
           
@@ -898,11 +1013,11 @@ begin
             if s in expected then
             begin
               remove_from_list(0, s); // Expected
-              add_to_list1(s);        // Missing
+              add_to_list(1,s);        // Missing
             end else
             begin
               remove_from_list(2, s); // Unexpected
-              add_to_list3(s);        // Other
+              add_to_list(3,s);        // Other
             end
           );
           
@@ -912,7 +1027,7 @@ begin
         begin
           if s in last_predators then continue;
           // add predator
-          invoke(()->add_to_list4(s));
+          invoke(()->add_to_list(4,s));
         end;
         
         foreach var s in last_predators do
@@ -930,13 +1045,6 @@ begin
       on e: Exception do
         MessageBox.Show(e.ToString);
     end);
-    
-    System.Threading.Tasks.Task.Run(()->all.ConsumedBy(last_ms).ToHashSet())
-    .ContinueWith(t->
-    begin
-      var consumed := t.Result;
-      
-    end, System.Threading.Tasks.TaskScheduler.FromCurrentSynchronizationContext);
     
   end;
   update_confirm += update_lists;
@@ -1013,28 +1121,35 @@ begin
       System.Windows.Input.Key.Enter:
       begin
         e.Handled := true;
-        var sel := SelectionManager.AllSelected;
+        var sel := SelectionManager.AllSelected.ToArray;
         var first := sel.FirstOrDefault;
         if first=nil then exit;
         
+        var w := w;
         if first is WinName then
         begin
           var cl := WinName(first).cl;
-          var (res, missing, predators) := LetChooseMerge(
-            sel.Select(o->
+          StartInSTA(()->
+          begin
+            var (res, missing, predators) := LetChooseMerge(
+              sel.Select(o->
+              begin
+                var wn := WinName(o);
+                if wn.cl<>cl then raise new System.InvalidOperationException;
+                Result := wn.name;
+              end),
+              cl.ms_list
+            );
+            if res=nil then exit;
+            w.Dispatcher.Invoke(()->SaveHelper.DelaySaves(()->
             begin
-              var wn := WinName(o);
-              if wn.cl<>cl then raise new System.InvalidOperationException;
-              Result := wn.name;
-            end),
-            cl.ms_list
-          );
-          if res=nil then exit;
-          foreach var s in predators do
-            cl.Remove(s);
-          cl.Add( new WinName(res), nil );
-          if missing<>nil then foreach var s in missing do
-            cl.Remove(s);
+              foreach var s in predators do
+                cl.Remove(s);
+              cl.Add( new WinName(res), nil );
+              if missing<>nil then foreach var s in missing do
+                cl.Remove(s);
+            end));
+          end);
         end else
         if first is WinClass then
         begin
@@ -1044,20 +1159,25 @@ begin
             Result := WinClass(o);
             if Result.gr<>gr then raise new System.InvalidOperationException;
           end).ToList;
-          var (res, missing, predators) := LetChooseMerge(
-            old_cls.ConvertAll(cl->cl.cl_name),
-            gr.ms_list
-          );
-          if res=nil then exit;
-          var cl := new WinClass( res, nil, Seq&<WinName>() );
-          var absorb := procedure(s: MergedString)->
-            if gr.ms_list.Remove(s, \(key,v)->begin cl.Absorb(WinClass(v[0])) end) <> 1 then
-              raise new System.InvalidOperationException;
-          foreach var s in predators do
-            absorb(s);
-          gr.Add( cl, nil );
-          if missing<>nil then foreach var s in missing do
-            absorb(s);
+          StartInSTA(()->
+          begin
+            var (res, missing, predators) := LetChooseMerge(
+              old_cls.ConvertAll(cl->cl.cl_name),
+              gr.ms_list
+            );
+            if res=nil then exit;
+            var cl := new WinClass( res, nil, Seq&<WinName>() );
+            var absorb := procedure(s: MergedString)->
+              gr.Remove( s, cl.Absorb );
+            w.Dispatcher.Invoke(()->SaveHelper.DelaySaves(()->
+            begin
+              foreach var s in predators do
+                absorb(s);
+              gr.Add( cl, nil );
+              if missing<>nil then foreach var s in missing do
+                absorb(s);
+            end));
+          end);
         end else
           raise new System.NotImplementedException(TypeName(first));
         
@@ -1066,7 +1186,8 @@ begin
     end;
     
     var disp := System.Windows.Threading.Dispatcher.CurrentDispatcher;
-    var update_visual := procedure(a: Action)->disp.InvokeAsync(()->
+    var load_ops := new List<System.Windows.Threading.DispatcherOperation>;
+    var update_visual := procedure(a: Action)->lock load_ops do load_ops.Add(disp.InvokeAsync(()->
     try
       a();
     except
@@ -1075,7 +1196,7 @@ begin
         MessageBox.Show(e.ToString);
         Halt;
       end;
-    end, System.Windows.Threading.DispatcherPriority.Background);
+    end, System.Windows.Threading.DispatcherPriority.Background));
     
     {$region Load}
     
@@ -1096,6 +1217,7 @@ begin
     
     begin
       var prev_gr := default(WinClassGroup);
+      SaveHelper.IncSaveDelay;
       foreach var gr_name in |'0 Touch','1 What','2 Dont'| do
       begin
         var dir := System.IO.Path.Combine('Classes', gr_name);
@@ -1142,76 +1264,95 @@ begin
     end;
     {$endif NoSaves}
     
-    update_visual(()->System.Threading.Thread.Create(()->
-    while true do
-    try
-      
-      WinAPI.LongPollWindows(w->
+    System.Threading.Thread.Create(()->
+    begin
+      while true do
       begin
-        Result := false;
-        
-        if not w.CanMaximize then exit;
-        
-        var pl := w.GetPlacement;
-        if pl=nil then exit;
-        var w_st_max := false;
-        case pl.Value.showCmd of
-          SW_SHOWMINIMIZED: exit;
-          SW_MAXIMIZE: w_st_max := true;
-          SW_NORMAL: ;
-          else raise new NotImplementedException(pl.Value.showCmd.ToString);
-        end;
-        
-        var cl_s := w.GetClass;
-        if cl_s=nil then exit;
-        var cl_ms := MergedString.Literal(cl_s);
-        
-        var wn_s := w.GetName;
-        var wn_ms := if wn_s=nil then nil else MergedString.Literal(wn_s);
-        
-        var cls := new List<WinClass>;
-        foreach var gr in WinClassGroup.All do
-          foreach var (key, v) in gr.ms_list.DepValues(cl_ms) do
-            cls += WinClass(v[0]);
-        
-        if (cls.Count>1) and (wn_ms<>nil) then
-        begin
-          var new_cls := cls.FindAll(cl->wn_ms in cl.ms_list);
-          if new_cls.Count<>0 then
-            cls := new_cls;
-        end;
-        
-        if cls.Select(cl->cl.gr).Distinct.Skip(1).Any then
-          cls.Clear;
-        
-        if cls.Count=0 then
-          foreach var (key, v) in WinClassGroup.All[1].ms_list.DepValues(cl_ms) do
-          begin
-            cls += WinClass(v[0]);
-            break;
-          end;
-        
-        if cls.Count=0 then
-          cls += g.Dispatcher.Invoke(()->
-          begin
-            Result := new WinClass( cl_ms, cl_s, update_visual, Seq&<WinName>() );
-            WinClassGroup.All[1].Add( Result, nil );
-          end);
-        
-        var cl := cls.First;
-        
-        if wn_ms<>nil then
-          g.Dispatcher.Invoke(()->cl.Add( new WinName(wn_ms, wn_s), nil ));
-        
-        Result := (cl.gr <> WinClassGroup.All[0]) or w_st_max or w.Maximize;
-      end);
+        lock load_ops do load_ops.RemoveAll(op->op.GetAwaiter.IsCompleted);
+        if load_ops.Count=0 then break;
+        Sleep(100);
+      end;
+      // Load complete
+      SaveHelper.DecSaveDelay;
+      foreach var fr in |500,1000,1500| do
+        Console.Beep(fr, 300);
       
-    except
-      on e: Exception do
-        MessageBox.Show(e.ToString);
-    end).Start());
+      while true do
+      try
+        Sleep(100);
+        
+        WinAPI.LongPollWindows(w->
+        begin
+          Result := false;
+          
+          if not w.CanMaximize then exit;
+          
+          var pl := w.GetPlacement;
+          if pl=nil then exit;
+          var w_st_max := false;
+          case pl.Value.showCmd of
+            SW_SHOWMINIMIZED: exit;
+            SW_MAXIMIZE: w_st_max := true;
+            SW_NORMAL: ;
+            else raise new NotImplementedException(pl.Value.showCmd.ToString);
+          end;
+          
+          var cl_s := w.GetClass;
+          if cl_s=nil then exit;
+          var cl_ms := MergedString.Literal(cl_s);
+          
+          var wn_s := w.GetName;
+          var wn_ms := if wn_s=nil then nil else MergedString.Literal(wn_s);
+          
+          var cls := new List<WinClass>;
+          foreach var gr in WinClassGroup.All do
+            cls.AddRange( gr.PredatorClasses(cl_ms) );
+          
+          if (cls.Count>1) and (wn_ms<>nil) then
+          begin
+            var new_cls := cls.FindAll(cl->wn_ms in cl.ms_list);
+            if new_cls.Count<>0 then
+              cls := new_cls;
+          end;
+          
+          if cls.Select(cl->cl.gr).Distinct.Skip(1).Any then
+            cls.Clear;
+          
+          if cls.Count=0 then
+            // No point adding more then 1
+            cls.AddRange( WinClassGroup.All[1].PredatorClasses(cl_ms).Take(1) );
+          
+          if cls.Count=0 then
+            cls += g.Dispatcher.Invoke(()->
+            begin
+              var cl := new WinClass( cl_ms, cl_s, update_visual, Seq&<WinName>() );
+              Console.Beep;
+              SaveHelper.DelaySaves(()->
+                WinClassGroup.All[1].Add( cl, nil )
+              );
+              Result := cl;
+            end);
+          
+          var cl := cls.First;
+          
+          if wn_ms<>nil then
+            g.Dispatcher.Invoke(()->
+              SaveHelper.DelaySaves(()->
+                cl.Add( new WinName(wn_ms, wn_s), nil )
+              )
+            );
+          
+          Result := (cl.gr <> WinClassGroup.All[0]) or w_st_max or w.Maximize;
+        end);
+        
+      except
+        on e: Exception do
+          MessageBox.Show(e.ToString);
+      end;
+      
+    end).Start;
     
-    var ec := Application.Create.Run(w);
+    var ec := Application.Create.Run;
     Halt(ec);
   except
     on e: Exception do
