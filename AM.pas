@@ -1130,7 +1130,7 @@ begin
         begin
           var cl := WinName(first).cl;
           StartInSTA(()->
-          begin
+          try
             var (res, missing, predators) := LetChooseMerge(
               sel.Select(o->
               begin
@@ -1142,13 +1142,19 @@ begin
             );
             if res=nil then exit;
             w.Dispatcher.Invoke(()->SaveHelper.DelaySaves(()->
-            begin
+            try
               foreach var s in predators do
                 cl.Remove(s);
               cl.Add( new WinName(res), nil );
               if missing<>nil then foreach var s in missing do
                 cl.Remove(s);
+            except
+              on e: Exception do
+                MessageBox.Show(e.ToString);
             end));
+          except
+            on e: Exception do
+              MessageBox.Show(e.ToString);
           end);
         end else
         if first is WinClass then
@@ -1160,23 +1166,29 @@ begin
             if Result.gr<>gr then raise new System.InvalidOperationException;
           end).ToList;
           StartInSTA(()->
-          begin
+          try
             var (res, missing, predators) := LetChooseMerge(
               old_cls.ConvertAll(cl->cl.cl_name),
               gr.ms_list
             );
             if res=nil then exit;
-            var cl := new WinClass( res, nil, Seq&<WinName>() );
-            var absorb := procedure(s: MergedString)->
-              gr.Remove( s, cl.Absorb );
             w.Dispatcher.Invoke(()->SaveHelper.DelaySaves(()->
-            begin
+            try
+              var cl := new WinClass( res, nil, Seq&<WinName>() );
+              var absorb := procedure(s: MergedString)->
+                gr.Remove( s, cl.Absorb );
               foreach var s in predators do
                 absorb(s);
               gr.Add( cl, nil );
               if missing<>nil then foreach var s in missing do
                 absorb(s);
+            except
+              on e: Exception do
+                MessageBox.Show(e.ToString);
             end));
+          except
+            on e: Exception do
+              MessageBox.Show(e.ToString);
           end);
         end else
           raise new System.NotImplementedException(TypeName(first));
